@@ -12,3 +12,9 @@ writing_prompt = ChatPromptTemplate.from_template(
     "Use this plan:\n{plan}\n"
     "Return only the poem."
 )
+
+revision_prompt = ChatPromptTemplate.from_template(
+    "Shorten this poem to at most {lines} nonempty lines. "
+    "Preserve its topic and mood. Return only the revised poem.\n\n"
+    "{poem}"
+)
