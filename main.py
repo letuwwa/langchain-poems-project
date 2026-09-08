@@ -45,7 +45,7 @@ def main(
         with console.status("Explaining your poem...", spinner="dots"):
             explanation = explanation_chain.invoke({"request": request})
         console.print(
-            Panel(Text(explanation.strip()), title="Explanation", border_style="cyan")
+            Panel.fit(Text(explanation.strip()), title="Explanation", border_style="cyan")
         )
         return
 
@@ -58,7 +58,7 @@ def main(
         plan = planning_chain.invoke({"topic": topic})
 
     console.print(
-        Panel(Text(plan.strip()), title="Plan", border_style="yellow"),
+        Panel.fit(Text(plan.strip()), title="Plan", border_style="yellow"),
     )
 
     with console.status("Writing your poem...", spinner="dots"):
@@ -74,7 +74,7 @@ def main(
             )
 
     console.print(
-        Panel(Text(poem.strip()), title=Text(topic.capitalize()), border_style="cyan"),
+        Panel.fit(Text(poem.strip()), title=Text(topic.capitalize()), border_style="cyan"),
     )
 
 
