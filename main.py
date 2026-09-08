@@ -1,4 +1,5 @@
 import typer
+from rich.align import Align
 from rich.text import Text
 from rich.panel import Panel
 from rich.console import Console
@@ -45,7 +46,9 @@ def main(
         with console.status("Explaining your poem...", spinner="dots"):
             explanation = explanation_chain.invoke({"request": request})
         console.print(
-            Panel.fit(Text(explanation.strip()), title="Explanation", border_style="cyan")
+            Align.center(
+                Panel.fit(Text(explanation.strip()), title="Explanation", border_style="cyan")
+            )
         )
         return
 
@@ -58,7 +61,7 @@ def main(
         plan = planning_chain.invoke({"topic": topic})
 
     console.print(
-        Panel.fit(Text(plan.strip()), title="Plan", border_style="yellow"),
+        Align.center(Panel.fit(Text(plan.strip()), title="Plan", border_style="yellow")),
     )
 
     with console.status("Writing your poem...", spinner="dots"):
@@ -74,7 +77,9 @@ def main(
             )
 
     console.print(
-        Panel.fit(Text(poem.strip()), title=Text(topic.capitalize()), border_style="cyan"),
+        Align.center(
+            Panel.fit(Text(poem.strip()), title=Text(topic.capitalize()), border_style="cyan")
+        ),
     )
 
 
