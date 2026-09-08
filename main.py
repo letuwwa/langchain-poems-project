@@ -5,7 +5,13 @@ from rich.console import Console
 from langchain_ollama import ChatOllama
 from langchain_core.output_parsers import StrOutputParser
 
-from prompts import planning_prompt, revision_prompt, writing_prompt
+from prompts import (
+    explanation_prompt,
+    planning_prompt,
+    revision_prompt,
+    writing_prompt,
+    router_prompt,
+)
 
 
 def validate_poem(poem: str, limit: int) -> bool:
@@ -13,15 +19,41 @@ def validate_poem(poem: str, limit: int) -> bool:
 
 
 def main(
-    topic: str = typer.Option(help="Poem topic."),
+    request: str = typer.Option(
+        ..., "--request", "--topic", help="Ask to write or explain a poem."
+    ),
     lines: int = typer.Option(5, min=1, help="Maximum amount of lines."),
 ):
     model = ChatOllama(model="gemma2:9b")
+    router_chain = (
+        router_prompt | ChatOllama(model="gemma2:9b", temperature=0) | StrOutputParser()
+    )
+
+    console = Console()
+    with console.status("Choosing a route...", spinner="dots"):
+        route = router_chain.invoke({"request": request}).strip().lower()
+
+    if route not in {"write", "explain"}:
+        console.print(
+            "[red]Could not choose a route. Please rephrase your request.[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    console.print(f"[dim]Route: {route}[/dim]")
+    if route == "explain":
+        explanation_chain = explanation_prompt | model | StrOutputParser()
+        with console.status("Explaining your poem...", spinner="dots"):
+            explanation = explanation_chain.invoke({"request": request})
+        console.print(
+            Panel(Text(explanation.strip()), title="Explanation", border_style="cyan")
+        )
+        return
+
+    topic = request
     planning_chain = planning_prompt | model | StrOutputParser()
     writing_chain = writing_prompt | model | StrOutputParser()
     revision_chain = revision_prompt | model | StrOutputParser()
 
-    console = Console()
     with console.status("Planning your poem...", spinner="dots"):
         plan = planning_chain.invoke({"topic": topic})
 
