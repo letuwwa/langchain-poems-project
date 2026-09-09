@@ -20,6 +20,23 @@ uv run main.py --help
 The model classifies your request as `write` or `explain`, and Python selects
 the matching workflow. The selected route is shown in the terminal.
 
+```mermaid
+flowchart TD
+    Input[User request] --> Router{Model chooses route}
+    Router -->|explain| Explain[Explain poem]
+    Explain --> Explanation[Display explanation]
+    Router -->|write| Plan[Plan poem]
+    Plan --> Write[Write poem using plan]
+    Write --> Check{Within line limit?}
+    Check -->|Yes| Output[Display poem]
+    Check -->|No| Revise[Revise once]
+    Revise --> Recheck{Within line limit?}
+    Recheck -->|Yes| Output
+    Recheck -->|No| Warning[Display warning]
+    Warning --> Output
+    Router -->|Unsupported response| Error[Ask to rephrase and exit]
+```
+
 - **Write:** Plan → Write → Count nonempty lines → Revise once if needed → Check again.
   If the revised poem still exceeds the limit, display a warning and the poem.
 - **Explain:** Explain the supplied poem's meaning, mood, and imagery.
