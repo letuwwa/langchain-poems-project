@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import typer
 from rich.align import Align
 from rich.text import Text
@@ -15,16 +17,45 @@ from prompts import (
 )
 
 
+from pathlib import Path
+
+from ingestion import ingest_file
+from storage import save_poem, search_poems_with_scores
+
+app = typer.Typer()
+
+
 def validate_poem(poem: str, limit: int) -> bool:
     return sum(1 for line in poem.splitlines() if line.strip()) <= limit
 
 
+@app.callback(invoke_without_command=True)
 def main(
-    request: str = typer.Option(
-        ..., "--request", "--topic", help="Ask to write or explain a poem."
+    ctx: typer.Context,
+    request: str | None = typer.Option(
+        None,
+        "--request",
+        "--topic",
+        help="Ask to write or explain a poem.",
     ),
     lines: int = typer.Option(5, min=1, help="Maximum amount of lines."),
+    save: bool = typer.Option(False, "--save", help="Save the final generated poem."),
+    rag: bool = typer.Option(
+        False, "--rag", help="Use stored poems as writing references."
+    ),
+    reference_limit: int = typer.Option(
+        3, min=1, help="Maximum number of RAG references."
+    ),
+    max_distance: float | None = typer.Option(
+        None, min=0, help="RAG reference distance cutoff; no cutoff by default."
+    ),
 ):
+    if ctx.invoked_subcommand is not None:
+        return
+
+    if not request:
+        raise typer.BadParameter("Provide --request, or use an ingest/search command.")
+
     model = ChatOllama(model="gemma2:9b")
     router_chain = (
         router_prompt | ChatOllama(model="gemma2:9b", temperature=0) | StrOutputParser()
@@ -42,30 +73,54 @@ def main(
 
     console.print(f"[dim]Route: {route}[/dim]")
     if route == "explain":
+        if save or rag:
+            console.print("[dim]--save and --rag apply only to writing poems.[/dim]")
         explanation_chain = explanation_prompt | model | StrOutputParser()
         with console.status("Explaining your poem...", spinner="dots"):
             explanation = explanation_chain.invoke({"request": request})
         console.print(
             Align.center(
-                Panel.fit(Text(explanation.strip()), title="Explanation", border_style="cyan")
+                Panel.fit(
+                    Text(explanation.strip()), title="Explanation", border_style="cyan"
+                )
             )
         )
         return
 
     topic = request
+    context = ""
+    if rag:
+        with console.status("Finding reference poems..."):
+            references = search_poems_with_scores(
+                request, reference_limit, max_distance
+            )
+        if not references:
+            console.print("No matching references found. Writing without references.")
+        for index, (document, distance) in enumerate(references, start=1):
+            title = document.metadata.get("title", "Untitled poem")
+            source = document.metadata.get("source", document.id or "generated")
+            console.print(
+                Text(f"Reference {index}: {title} ({source}), distance {distance:.4f}")
+            )
+            context += f"Reference {index}:\n{document.page_content}\n\n"
+
     planning_chain = planning_prompt | model | StrOutputParser()
     writing_chain = writing_prompt | model | StrOutputParser()
     revision_chain = revision_prompt | model | StrOutputParser()
 
     with console.status("Planning your poem...", spinner="dots"):
-        plan = planning_chain.invoke({"topic": topic})
+        plan = planning_chain.invoke({"topic": topic, "context": context})
 
     console.print(
-        Align.center(Panel.fit(Text(plan.strip()), title="Plan", border_style="yellow")),
+        Align.center(
+            Panel.fit(Text(plan.strip()), title="Plan", border_style="yellow")
+        ),
     )
 
     with console.status("Writing your poem...", spinner="dots"):
-        poem = writing_chain.invoke({"topic": topic, "lines": lines, "plan": plan})
+        poem = writing_chain.invoke(
+            {"topic": topic, "lines": lines, "plan": plan, "context": context}
+        )
 
     if not validate_poem(poem, lines):
         with console.status("Shortening your poem...", spinner="dots"):
@@ -78,10 +133,107 @@ def main(
 
     console.print(
         Align.center(
-            Panel.fit(Text(poem.strip()), title=Text(topic.capitalize()), border_style="cyan")
+            Panel.fit(
+                Text(poem.strip()), title=Text(topic.capitalize()), border_style="cyan"
+            )
         ),
     )
 
+    if save:
+        try:
+            with console.status("Saving poem..."):
+                poem_id, created = save_poem(
+                    poem,
+                    metadata={
+                        "source_type": "generated",
+                        "title": request,
+                        "request": request,
+                        "model": "gemma2:9b",
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "line_limit": lines,
+                        "within_line_limit": validate_poem(poem, lines),
+                        "rag": rag,
+                    },
+                )
+        except Exception as exc:
+            console.print(Text(f"Poem displayed above, but saving failed: {exc}"))
+            raise typer.Exit(code=1) from exc
+        console.print(f"{'Saved' if created else 'Already saved'}: {poem_id}")
+
+
+@app.command()
+def ingest(
+    path: Path = typer.Argument(..., exists=True, readable=True),
+):
+    """Import one TXT file or all TXT files under a folder."""
+    console = Console()
+
+    files = sorted(path.rglob("*.txt")) if path.is_dir() else [path]
+
+    if not files:
+        console.print("No TXT files found.")
+        return
+
+    added = skipped = failed = 0
+
+    for file in files:
+        if file.suffix.lower() != ".txt":
+            console.print(f"Unsupported file: {file}")
+            failed += 1
+            continue
+
+        try:
+            with console.status(f"Embedding {file.name}..."):
+                _, created = ingest_file(file)
+
+            if created:
+                added += 1
+            else:
+                skipped += 1
+        except (OSError, UnicodeError, ValueError) as exc:
+            failed += 1
+            console.print(f"Could not import {file}: {exc}")
+
+    console.print(f"Added: {added}, unchanged: {skipped}, failed: {failed}")
+
+    if failed:
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def search(
+    query: str,
+    limit: int = typer.Option(3, min=1),
+    max_distance: float | None = typer.Option(
+        None,
+        min=0,
+        help="Maximum embedding distance; lower is closer. No cutoff by default.",
+    ),
+):
+    """Find poems by meaning."""
+    console = Console()
+
+    with console.status("Searching poems..."):
+        poems = search_poems_with_scores(query, limit, max_distance)
+
+    if not poems:
+        console.print(
+            "No poems matched the distance cutoff, or the library is empty."
+            if max_distance is not None
+            else "No poems found. Import or save some poems first."
+        )
+        return
+
+    for poem, distance in poems:
+        title = poem.metadata.get("title", "Poem")
+        console.print(
+            Panel(
+                Text(poem.page_content),
+                title=Text(title),
+                subtitle=Text(f"Distance: {distance:.4f} (lower is closer)"),
+            )
+        )
+
 
 if __name__ == "__main__":
-    typer.run(main)
+    app()
