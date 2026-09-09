@@ -1,13 +1,21 @@
 # Poem CLI
 
-A simple LangChain console app using Typer, Rich, and local Ollama `gemma2:9b`.
+A local poetry CLI using LangChain, Typer, Rich, Ollama, and ChromaDB.
+Write or explain poems, import TXT files, search by meaning, and optionally
+use stored poems as references for new writing.
 
 Requires Python 3.14+, uv, and Ollama running locally.
 
 ```bash
 uv sync
 ollama pull gemma2:9b
+ollama pull embeddinggemma
 ```
+
+Run commands from the project directory. Ollama must be running; if it is not
+already running as a service, start `ollama serve` in another terminal.
+`gemma2:9b` handles writing and explanation. `embeddinggemma` is needed for
+ingestion, search, saving, and RAG; it is optional for ordinary writing/explanation.
 
 Write or explain a poem:
 
@@ -25,7 +33,10 @@ flowchart TD
     Input[User request] --> Router{Model chooses route}
     Router -->|explain| Explain[Explain poem]
     Explain --> Explanation[Display explanation]
-    Router -->|write| Plan[Plan poem]
+    Router -->|write| RAG{RAG enabled?}
+    RAG -->|Yes| Retrieve[Retrieve reference poems]
+    Retrieve --> Plan[Plan poem]
+    RAG -->|No| Plan
     Plan --> Write[Write poem using plan]
     Write --> Check{Within line limit?}
     Check -->|Yes| Output[Display poem]
@@ -34,16 +45,22 @@ flowchart TD
     Recheck -->|Yes| Output
     Recheck -->|No| Warning[Display warning]
     Warning --> Output
+    Output --> Save{Save enabled?}
+    Save -->|Yes| Store[Embed and save final poem in Chroma]
+    Save -->|No| Done[Done]
+    Store --> Done
     Router -->|Unsupported response| Error[Ask to rephrase and exit]
 ```
 
 - **Write:** Plan → Write → Count nonempty lines → Revise once if needed → Check again.
   If the revised poem still exceeds the limit, display a warning and the poem.
 - **Explain:** Explain the supplied poem's meaning, mood, and imagery.
-  Include the poem in your request; previous runs are not remembered.
+  Include the poem in your request; this route does not retrieve stored poems
+  or remember earlier conversations.
 
 Rich displays loading spinners and panels for the plan, poem, or explanation.
 If the router returns an unsupported response, the app asks you to rephrase and exits.
+Empty generated poems or revisions cause an error and are not saved.
 
 `--request` is required for writing or explaining, but not for subcommands;
 `--topic` is an alias. `--lines` defaults to 5, must be
@@ -55,10 +72,17 @@ Prompt templates are in `prompts.py`; the workflow is in `main.py`.
 
 ```bash
 ollama pull embeddinggemma
+uv run main.py ingest ./poems/winter.txt
 uv run main.py ingest ./poems/
 uv run main.py search "winter"
 uv run main.py search "winter" --limit 4 --max-distance 0.8
 ```
+
+Ingestion treats each UTF-8 TXT file (with or without a BOM) as one complete poem.
+Internal line breaks and stanza breaks are preserved; outer whitespace is trimmed.
+Folder imports are recursive and accept case-insensitive `.txt` extensions.
+Empty files are rejected. The command reports added, unchanged, and failed files.
+The `poems/` folder includes winter, spring, summer, and autumn examples.
 
 Search displays embedding distances: lower means closer, not a confidence
 percentage. Without `--max-distance`, search returns the nearest `--limit`
@@ -66,6 +90,8 @@ poems (default 3), even if some are weak matches. With a cutoff, it returns
 only candidates whose distance is at or below that value, possibly none.
 The example cutoff `0.8` is illustrative, not calibrated: inspect distances
 for several queries before choosing a value for your library and model.
+Cutoffs must be finite and nonnegative; result limits must be at least 1.
+Requests and search queries cannot be blank.
 
 ## Save generated poems and use references
 
@@ -88,3 +114,49 @@ weak matches. Retrieved text is provided as optional inspiration, not instructio
 These flags apply only to writing; explanations are not saved. Without either flag,
 writing and explanation do not access Chroma. RAG and saving require the local
 `embeddinggemma` model as well as `gemma2:9b`.
+
+## CLI options
+
+| Command | Option | Default | Purpose |
+| --- | --- | --- | --- |
+| Root | `--request`, `--topic` | Required without a subcommand | Writing or explanation request |
+| Root | `--lines` | `5` | Maximum nonempty poem lines |
+| Root | `--save` | Off | Save the final generated poem |
+| Root | `--rag` | Off | Retrieve references for planning and writing |
+| Root | `--reference-limit` | `3` | Maximum retrieved references |
+| Root | `--max-distance` | No cutoff | Filter RAG references by distance |
+| `search` | `--limit` | `3` | Maximum search results |
+| `search` | `--max-distance` | No cutoff | Filter search results by distance |
+
+Search options go after `search`, for example `main.py search "winter" --limit 1`.
+Root options control writing/explanation, not subcommands. Inspect help with:
+
+```bash
+uv run main.py --help
+uv run main.py ingest --help
+uv run main.py search --help
+```
+
+## Storage and project files
+
+Chroma persists poem text, embeddings, and metadata in `data/chroma/`, relative
+to `storage.py`, using the `poems` collection. The database survives CLI restarts
+and is excluded from Git. No separate Chroma server is required.
+
+IDs are SHA-256 hashes of the stripped poem text. Reimporting identical text
+does not update its metadata, even from another filename. Editing a file and
+reimporting adds a new record; it does not replace or delete the old version.
+Imported records include the source path, filename-derived title, and timestamp.
+
+| File | Responsibility |
+| --- | --- |
+| `main.py` | CLI commands, write/explain workflows, and terminal display |
+| `prompts.py` | Routing, planning, writing, revision, and explanation prompts |
+| `storage.py` | Embedding model, persistent Chroma collection, saving, and search |
+| `ingestion.py` | TXT reading and import metadata |
+| `poems/` | Example poems for ingestion |
+
+Models are currently configured in code. Keep the embedding model consistent
+for indexing and querying; changing it requires rebuilding the embeddings.
+The app does not automatically load `.env`; optional environment settings must
+be exported into the process environment.
