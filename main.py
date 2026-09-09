@@ -1,32 +1,36 @@
 from datetime import datetime, timezone
+from math import isfinite
+from pathlib import Path
 
 import typer
-from rich.align import Align
-from rich.text import Text
-from rich.panel import Panel
-from rich.console import Console
-from langchain_ollama import ChatOllama
 from langchain_core.output_parsers import StrOutputParser
+from langchain_ollama import ChatOllama
+from rich.align import Align
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
 
+from ingestion import ingest_file
 from prompts import (
     explanation_prompt,
     planning_prompt,
     revision_prompt,
-    writing_prompt,
     router_prompt,
+    writing_prompt,
 )
-
-
-from pathlib import Path
-
-from ingestion import ingest_file
 from storage import save_poem, search_poems_with_scores
 
 app = typer.Typer()
 
 
 def validate_poem(poem: str, limit: int) -> bool:
-    return sum(1 for line in poem.splitlines() if line.strip()) <= limit
+    return 0 < sum(1 for line in poem.splitlines() if line.strip()) <= limit
+
+
+def validate_distance(value: float | None) -> float | None:
+    if value is not None and (not isfinite(value) or value < 0):
+        raise typer.BadParameter("Distance must be finite and nonnegative.")
+    return value
 
 
 @app.callback(invoke_without_command=True)
@@ -47,13 +51,16 @@ def main(
         3, min=1, help="Maximum number of RAG references."
     ),
     max_distance: float | None = typer.Option(
-        None, min=0, help="RAG reference distance cutoff; no cutoff by default."
+        None,
+        min=0,
+        callback=validate_distance,
+        help="RAG reference distance cutoff; no cutoff by default.",
     ),
 ):
     if ctx.invoked_subcommand is not None:
         return
 
-    if not request:
+    if not request or not request.strip():
         raise typer.BadParameter("Provide --request, or use an ingest/search command.")
 
     model = ChatOllama(model="gemma2:9b")
@@ -122,9 +129,19 @@ def main(
             {"topic": topic, "lines": lines, "plan": plan, "context": context}
         )
 
+    if not poem.strip():
+        console.print("[red]The model returned an empty poem. Please try again.[/red]")
+        raise typer.Exit(code=1)
+
     if not validate_poem(poem, lines):
         with console.status("Shortening your poem...", spinner="dots"):
             poem = revision_chain.invoke({"poem": poem, "lines": lines})
+
+        if not poem.strip():
+            console.print(
+                "[red]The model returned an empty revision. Please try again.[/red]"
+            )
+            raise typer.Exit(code=1)
 
         if not validate_poem(poem, lines):
             console.print(
@@ -168,7 +185,15 @@ def ingest(
     """Import one TXT file or all TXT files under a folder."""
     console = Console()
 
-    files = sorted(path.rglob("*.txt")) if path.is_dir() else [path]
+    files = (
+        sorted(
+            file
+            for file in path.rglob("*")
+            if file.is_file() and file.suffix.lower() == ".txt"
+        )
+        if path.is_dir()
+        else [path]
+    )
 
     if not files:
         console.print("No TXT files found.")
@@ -178,7 +203,7 @@ def ingest(
 
     for file in files:
         if file.suffix.lower() != ".txt":
-            console.print(f"Unsupported file: {file}")
+            console.print(Text(f"Unsupported file: {file}"))
             failed += 1
             continue
 
@@ -192,7 +217,7 @@ def ingest(
                 skipped += 1
         except (OSError, UnicodeError, ValueError) as exc:
             failed += 1
-            console.print(f"Could not import {file}: {exc}")
+            console.print(Text(f"Could not import {file}: {exc}"))
 
     console.print(f"Added: {added}, unchanged: {skipped}, failed: {failed}")
 
@@ -207,11 +232,15 @@ def search(
     max_distance: float | None = typer.Option(
         None,
         min=0,
+        callback=validate_distance,
         help="Maximum embedding distance; lower is closer. No cutoff by default.",
     ),
 ):
     """Find poems by meaning."""
     console = Console()
+
+    if not query.strip():
+        raise typer.BadParameter("Search query must not be blank.", param_hint="query")
 
     with console.status("Searching poems..."):
         poems = search_poems_with_scores(query, limit, max_distance)

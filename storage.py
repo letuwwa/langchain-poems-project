@@ -1,11 +1,11 @@
 from functools import lru_cache
 from hashlib import sha256
+from math import isfinite
 from pathlib import Path
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_ollama import OllamaEmbeddings
-
 
 DB_PATH = Path(__file__).resolve().parent / "data" / "chroma"
 
@@ -41,10 +41,12 @@ def search_poems_with_scores(
     query: str, limit: int = 3, max_distance: float | None = None
 ) -> list[tuple[Document, float]]:
     """Return nearest poems within an optional distance cutoff (lower is closer)."""
+    if not query.strip():
+        raise ValueError("Search query must not be blank.")
     if limit < 1:
         raise ValueError("limit must be at least 1.")
-    if max_distance is not None and max_distance < 0:
-        raise ValueError("max_distance must be nonnegative.")
+    if max_distance is not None and (not isfinite(max_distance) or max_distance < 0):
+        raise ValueError("max_distance must be finite and nonnegative.")
 
     results = get_store().similarity_search_with_score(query, k=limit)
     return [

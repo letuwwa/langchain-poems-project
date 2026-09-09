@@ -45,7 +45,8 @@ flowchart TD
 Rich displays loading spinners and panels for the plan, poem, or explanation.
 If the router returns an unsupported response, the app asks you to rephrase and exits.
 
-`--request` is required; `--topic` is an alias. `--lines` defaults to 5, must be
+`--request` is required for writing or explaining, but not for subcommands;
+`--topic` is an alias. `--lines` defaults to 5, must be
 at least 1, and applies only to writing.
 
 Prompt templates are in `prompts.py`; the workflow is in `main.py`.
